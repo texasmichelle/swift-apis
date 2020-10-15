@@ -142,7 +142,6 @@
 #include "tensorflow/compiler/tf2xla/xla_tensor/ops/upsample_nearest2d.h"
 #include "tensorflow/compiler/tf2xla/xla_tensor/ops/upsample_nearest2d_backward.h"
 #include "tensorflow/compiler/tf2xla/xla_tensor/ops/user_computation.h"
-#include "tensorflow/compiler/tf2xla/xla_tensor/ops/view.h"
 #include "tensorflow/compiler/tf2xla/xla_tensor/ops/xla_avg_pool.h"
 #include "tensorflow/compiler/tf2xla/xla_tensor/ops/xla_avg_pool_grad.h"
 #include "tensorflow/compiler/tf2xla/xla_tensor/ops/xla_max_pool.h"
@@ -302,20 +301,6 @@ void CheckIsIntegralOrPred(const xla::Shape& shape,
       << "Operator " << op_name
       << " is only supported for integer or boolean type tensors, got: "
       << shape;
-}
-
-ViewInfo CreateAsStridedViewInfo(const xla::Shape& input_shape,
-                                 std::vector<xla::int64> size,
-                                 std::vector<xla::int64> stride,
-                                 c10::optional<xla::int64> storage_offset) {
-  xla::Shape result_shape = XlaHelpers::GetDynamicReshape(input_shape, size);
-  AsStridedInfo as_strided_info;
-  as_strided_info.stride = std::move(stride);
-  if (storage_offset) {
-    as_strided_info.offset = *storage_offset;
-  }
-  return ViewInfo(ViewInfo::Type::kAsStrided, std::move(result_shape),
-                  input_shape, as_strided_info);
 }
 
 }  // namespace
@@ -637,29 +622,6 @@ XLATensor XLATensor::argmin(const XLATensor& input) {
   return input.CreateFrom(
       ir::MakeNode<ir::ops::ArgMin>(input.GetIrValue(), -1, false),
       at::ScalarType::Long);
-}
-
-XLATensor XLATensor::as_strided(const XLATensor& input,
-                                std::vector<xla::int64> size,
-                                std::vector<xla::int64> stride,
-                                c10::optional<xla::int64> storage_offset) {
-  auto input_shape = input.shape();
-  return input.CreateViewTensor(CreateAsStridedViewInfo(
-      input_shape, std::move(size), std::move(stride), storage_offset));
-}
-
-void XLATensor::as_strided_(XLATensor& input, std::vector<xla::int64> size,
-                            std::vector<xla::int64> stride,
-                            c10::optional<xla::int64> storage_offset) {
-  if (input.data()->view == nullptr) {
-    input.SetIrValue(ir::MakeNode<ir::ops::AsStrided>(
-        input.GetIrValue(), std::move(size), std::move(stride),
-        storage_offset.value_or(0)));
-  } else {
-    auto input_shape = input.shape();
-    input.SetSubView(CreateAsStridedViewInfo(
-        input_shape, std::move(size), std::move(stride), storage_offset));
-  }
 }
 
 XLATensor XLATensor::asin(const XLATensor& input) {
@@ -1011,22 +973,6 @@ XLATensor XLATensor::diag(const XLATensor& input, xla::int64 offset) {
     return tensor_ops::MakeMatrixWithDiagonal(input, offset);
   }
   return diagonal(input, offset, /*dim1=*/-2, /*dim2=*/-1);
-}
-
-XLATensor XLATensor::diagonal(const XLATensor& input, xla::int64 offset,
-                              xla::int64 dim1, xla::int64 dim2) {
-  auto input_shape = input.shape();
-  xla::int64 canonical_dim1 =
-      XlaHelpers::GetCanonicalDimensionIndex(dim1, input.shape().get().rank());
-  xla::int64 canonical_dim2 =
-      XlaHelpers::GetCanonicalDimensionIndex(dim2, input.shape().get().rank());
-  DiagonalInfo diagonal_info;
-  diagonal_info.offset = offset;
-  diagonal_info.dim1 = canonical_dim1;
-  diagonal_info.dim2 = canonical_dim2;
-  ViewInfo view_info(ViewInfo::Type::kDiagonal, input_shape,
-                     std::move(diagonal_info));
-  return input.CreateViewTensor(std::move(view_info));
 }
 
 XLATensor XLATensor::div(const XLATensor& input, const XLATensor& other,
@@ -1907,23 +1853,6 @@ void XLATensor::mv_out(XLATensor& out, const XLATensor& input,
   out.SetIrValue(ir::ops::Dot(input.GetIrValue(), vec.GetIrValue()));
 }
 
-XLATensor XLATensor::narrow(const XLATensor& input, xla::int64 dim,
-                            xla::int64 start, xla::int64 length) {
-  auto input_shape = input.shape();
-  dim = XlaHelpers::GetCanonicalDimensionIndex(dim, input_shape.get().rank());
-  xla::Shape narrow_shape = input_shape;
-  narrow_shape.set_dimensions(dim, length);
-
-  ViewInfo::Type view_type = (xla::ShapeUtil::ElementsIn(input_shape) ==
-                              xla::ShapeUtil::ElementsIn(narrow_shape))
-                                 ? ViewInfo::Type::kReshape
-                                 : ViewInfo::Type::kNarrow;
-  ViewInfo view_info(view_type, std::move(narrow_shape), input_shape);
-  view_info.indices[dim] = XlaHelpers::GetCanonicalPosition(
-      input_shape.get().dimensions(), dim, start);
-  return input.CreateViewTensor(std::move(view_info));
-}
-
 std::tuple<XLATensor, XLATensor, XLATensor> XLATensor::native_batch_norm(
     const XLATensor& input, const XLATensor& weight, const XLATensor& bias,
     XLATensor& running_mean, XLATensor& running_var, bool training,
@@ -2088,15 +2017,6 @@ XLATensor XLATensor::not_supported(std::string description, xla::Shape shape,
                 device);
 }
 
-XLATensor XLATensor::permute(const XLATensor& input,
-                             absl::Span<const xla::int64> dims) {
-  auto input_shape = input.shape();
-  ViewInfo view_info(
-      ViewInfo::Type::kPermute, input_shape,
-      XlaHelpers::GetCanonicalDimensionIndices(dims, input_shape.get().rank()));
-  return input.CreateViewTensor(std::move(view_info));
-}
-
 XLATensor XLATensor::pow(const XLATensor& input, at::Scalar exponent) {
   ir::Value exponent_node =
       GetIrValueForScalar(exponent, input.shape(), input.GetDevice());
@@ -2237,20 +2157,6 @@ XLATensor XLATensor::replication_pad2d_backward(
       grad_output.GetIrValue(), input.GetIrValue(), std::move(padding)));
 }
 
-void XLATensor::resize_(XLATensor& input, std::vector<xla::int64> size) {
-  if (input.data()->view == nullptr) {
-    input.SetIrValue(
-        ir::MakeNode<ir::ops::Resize>(input.GetIrValue(), std::move(size)));
-  } else {
-    auto input_shape = input.shape();
-    xla::Shape resize_shape =
-        xla::ShapeUtil::MakeShape(input_shape.get().element_type(), size);
-    ViewInfo view_info(ViewInfo::Type::kResize, std::move(resize_shape),
-                       input_shape);
-    input.SetSubView(std::move(view_info));
-  }
-}
-
 XLATensor XLATensor::round_to_even(const XLATensor& input) {
   return input.CreateFrom(ir::ops::RoundToEven(input.GetIrValue()));
 }
@@ -2384,25 +2290,6 @@ XLATensor XLATensor::sinh(const XLATensor& input) {
 
 void XLATensor::sinh_(XLATensor& input) {
   input.SetInPlaceIrValue(ir::ops::Sinh(input.GetIrValue()));
-}
-
-XLATensor XLATensor::slice(const XLATensor& input, xla::int64 dim,
-                           xla::int64 start, xla::int64 end, xla::int64 step) {
-  auto input_shape = input.shape();
-  dim = XlaHelpers::GetCanonicalDimensionIndex(dim, input_shape.get().rank());
-  start = XlaHelpers::GetCanonicalPosition(input_shape.get().dimensions(), dim,
-                                           start);
-  end = XlaHelpers::GetCanonicalPosition(input_shape.get().dimensions(), dim,
-                                         end);
-  // S4TF allows tensor[-1:0] to return a 0-dim tensor.
-  if (start > end) {
-    end = start;
-  }
-  step = std::min(step, end - start);
-
-  SelectInfo select = {dim, start, end, step};
-  ViewInfo view_info(ViewInfo::Type::kSelect, input_shape, std::move(select));
-  return input.CreateViewTensor(std::move(view_info));
 }
 
 XLATensor XLATensor::smooth_l1_loss(const XLATensor& input,
@@ -2794,15 +2681,6 @@ XLATensor XLATensor::trace(const XLATensor& input) {
                         false, input.dtype());
 }
 
-XLATensor XLATensor::transpose(const XLATensor& input, xla::int64 dim0,
-                               xla::int64 dim1) {
-  auto input_shape = input.shape();
-  auto permute_dims = XlaHelpers::MakeTransposePermutation(
-      /*dim0=*/dim0, /*dim1=*/dim1, /*rank=*/input_shape.get().rank());
-  ViewInfo view_info(ViewInfo::Type::kPermute, input_shape, permute_dims);
-  return input.CreateViewTensor(std::move(view_info));
-}
-
 void XLATensor::transpose_(XLATensor& input, xla::int64 dim0, xla::int64 dim1) {
   input.SetIrValue(ir::ops::TransposeOp(input.GetIrValue(), dim0, dim1));
 }
@@ -2938,17 +2816,6 @@ XLATensor XLATensor::upsample_nearest2d_backward(
     std::vector<xla::int64> input_size) {
   return grad_output.CreateFrom(ir::MakeNode<ir::ops::UpsampleNearestBackward>(
       grad_output.GetIrValue(), std::move(output_size), std::move(input_size)));
-}
-
-XLATensor XLATensor::view(const XLATensor& input,
-                          absl::Span<const xla::int64> output_size) {
-  auto input_shape = input.shape();
-  std::vector<xla::int64> complete_dimensions =
-      GetCompleteShape(output_size, input_shape.get().dimensions());
-  xla::Shape shape =
-      XlaHelpers::GetDynamicReshape(input_shape, complete_dimensions);
-  ViewInfo view_info(ViewInfo::Type::kReshape, std::move(shape), input_shape);
-  return input.CreateViewTensor(std::move(view_info));
 }
 
 void XLATensor::zero_(XLATensor& input) {

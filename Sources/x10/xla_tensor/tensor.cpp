@@ -520,14 +520,6 @@ XLATensor XLATensor::Create(
   return xtensor;
 }
 
-XLATensor XLATensor::Create(
-    std::shared_ptr<View> view, const Device& device,
-    c10::optional<at::ScalarType> logical_element_type) {
-  XLATensor xtensor(std::move(view), device, logical_element_type);
-  DeviceContextArena::Get()->RegisterTensor(xtensor.data_ptr());
-  return xtensor;
-}
-
 XLATensor::XLATensor(const at::Tensor& tensor, const Device& device)
     : data_(std::make_shared<Data>(tensor, device)) {}
 
@@ -543,11 +535,6 @@ XLATensor::XLATensor(ir::Value ir_value, const Device& device,
                                    logical_element_type)) {
   TryLimitGraphSize();
 }
-
-XLATensor::XLATensor(std::shared_ptr<View> view, const Device& device,
-                     c10::optional<at::ScalarType> logical_element_type)
-    : data_(std::make_shared<Data>(std::move(view), device,
-                                   logical_element_type)) {}
 
 XLATensor::XLATensor(std::shared_ptr<Data> data) : data_(std::move(data)) {}
 
@@ -573,9 +560,6 @@ at::ScalarType XLATensor::physical_scalar_type() const {
 }
 
 xla::util::MaybeRef<xla::Shape> XLATensor::shape() const {
-  if (data()->view != nullptr) {
-    return data()->view->shape();
-  }
   if (data()->xla_data != nullptr) {
     return data()->xla_data->shape();
   }
@@ -600,22 +584,9 @@ const Device& XLATensor::GetDevice() const { return data()->device; }
 
 xla::int64 XLATensor::GetUniqueId() const { return data()->unique_id; }
 
-std::ptrdiff_t XLATensor::GetViewAliasId() const {
-  return data()->view != nullptr
-             ? reinterpret_cast<std::ptrdiff_t>(data()->view->alias().get())
-             : 0;
-}
-
 xla::ComputationClient::DataPtr XLATensor::GetXlaData() {
-  // XLA data can coexist with a view, but we need to check that the view did
-  // not receive any updates before calling the current XLA valid.
   bool up_to_date = true;
   ir::Value ir_value;
-  if (data()->view != nullptr) {
-    View::IrNode ir_value_updated = GetViewUpdate(data()->view);
-    up_to_date = !ir_value_updated.updated;
-    ir_value = std::move(ir_value_updated.ir_value);
-  }
   if (up_to_date) {
     xla::ComputationClient::DataPtr xla_data = CurrentXlaData();
     if (xla_data != nullptr) {
@@ -626,10 +597,6 @@ xla::ComputationClient::DataPtr XLATensor::GetXlaData() {
     }
   }
   if (ir_value) {
-    // The view gave us an updated IR value. We usually do not have a valid IR
-    // value field together with a view, but to allow code reuse in
-    // ApplyPendingGraph() we temporarily set it here. The following call to
-    // ApplyPendingGraph() will clear it.
     AssignIrValue(std::move(ir_value));
   }
   if (data()->ir_value) {
@@ -666,10 +633,9 @@ void XLATensor::SetXlaData(xla::ComputationClient::DataPtr xla_data,
                            bool sync) {
   data()->xla_data = std::move(xla_data);
   // Assigning a device data should always clear the IR node, to allow graph
-  // trimming. A view cannot be reset though, unless we are at a step-end sync.
+  // trimming.
   AssignIrValue(ir::Value());
   if (sync) {
-    data()->view = nullptr;
     data()->tensor_data = absl::nullopt;
   }
 }
@@ -677,16 +643,8 @@ void XLATensor::SetXlaData(xla::ComputationClient::DataPtr xla_data,
 void XLATensor::SetIrValue(ir::Value ir_value) {
   data()->xla_data = nullptr;
   data()->tensor_data = absl::nullopt;
-  if (data()->view != nullptr) {
-    // If we have an active view, and a SetIrValue() happens, it means we are
-    // within an in-place execution context, and we need to update the view's
-    // alias as well.
-    data()->view = UpdateView(data()->view, std::move(ir_value));
-    data()->generation += 1;
-  } else {
-    AssignIrValue(std::move(ir_value));
-    TryLimitGraphSize();
-  }
+  AssignIrValue(std::move(ir_value));
+  TryLimitGraphSize();
 }
 
 void XLATensor::SetInPlaceIrValue(ir::Value ir_value) {
@@ -743,9 +701,6 @@ ir::Value XLATensor::GetIrValue() const {
 }
 
 ir::Value XLATensor::CurrentIrValue() const {
-  if (data()->view != nullptr) {
-    return GetViewUpdate(data()->view).ir_value;
-  }
   return data()->ir_value;
 }
 
@@ -754,9 +709,6 @@ void XLATensor::SetTensorData(at::Tensor tensor_data) {
 }
 
 c10::optional<at::Tensor> XLATensor::CurrentTensorData() const {
-  if (data()->view != nullptr && !data()->view->IsUpToDate()) {
-    return absl::nullopt;
-  }
   return data()->tensor_data;
 }
 
@@ -827,55 +779,6 @@ ir::Value XLATensor::GetIrValueForScalar(
   return GetIrValueForScalar(value, type, shape.dimensions(), device);
 }
 
-View::IrNode XLATensor::GetViewUpdate(const std::shared_ptr<View>& view) const {
-  View::IrNode ir_value_updated = view->GetViewIrNode();
-  if (ir_value_updated.updated) {
-    data()->xla_data = nullptr;
-    data()->tensor_data = absl::nullopt;
-  }
-  return ir_value_updated;
-}
-
-std::shared_ptr<View> XLATensor::UpdateView(std::shared_ptr<View> view,
-                                            ir::Value ir_value) const {
-  if (ir_value.shape().dimensions() != view->shape().dimensions()) {
-    XLA_CHECK_EQ(xla::util::Multiply<xla::int64>(ir_value.shape().dimensions()),
-                 xla::util::Multiply<xla::int64>(view->shape().dimensions()));
-
-    ViewInfo view_info(ViewInfo::Type::kReshape, ir_value.shape(),
-                       view->shape());
-    view = view->CreateSubView(view_info.shape, view_info);
-  }
-  view->Update(std::move(ir_value));
-  return view;
-}
-
-void XLATensor::SetSubView(ViewInfo view_info) const {
-  data()->view = data()->view->CreateSubView(view_info.shape, view_info);
-  data()->generation += 1;
-}
-
-std::shared_ptr<View> XLATensor::CreateView(ViewInfo view_info) const {
-  if (data()->view != nullptr) {
-    return data()->view->CreateSubView(view_info.shape, view_info);
-  }
-  // This node is not a view, and creating a view forks the current node into
-  // becoming one itself. This means creating an alias with the current IR
-  // Node, and using the same alias for the created IR Node.
-  ir::Value ir_value = GetIrValue();
-  std::shared_ptr<Alias> alias = std::make_shared<Alias>(ir_value);
-  ViewInfo this_view_info(ViewInfo::Type::kNoOp, ir_value.shape(),
-                          ir_value.shape());
-  data()->view = std::make_shared<View>(ir_value.shape(), alias,
-                                        std::move(this_view_info));
-  AssignIrValue(ir::Value());
-  return std::make_shared<View>(view_info.shape, alias, view_info);
-}
-
-XLATensor XLATensor::CreateViewTensor(ViewInfo view_info) const {
-  return Create(CreateView(std::move(view_info)), GetDevice(), dtype());
-}
-
 at::Tensor XLATensor::ToTensor(bool detached) {
   at::Tensor tensor(std::unique_ptr<at::AnyScalarBuffer>(nullptr), {});
   c10::optional<at::Tensor> tensor_data = CurrentTensorData();
@@ -891,8 +794,7 @@ at::Tensor XLATensor::ToTensor(bool detached) {
   } else {
     tensor = *tensor_data;
     if (detached) {
-      if (data()->ir_value || data()->xla_data != nullptr ||
-          data()->view != nullptr) {
+      if (data()->ir_value || data()->xla_data != nullptr) {
         // If we have other authoritive sources, just drop our reference and
         // transfer it to the caller.
         data()->tensor_data = absl::nullopt;
@@ -913,46 +815,6 @@ void XLATensor::ShallowCopyTo(XLATensor* dest) const {
 void XLATensor::SetScalarType(
     c10::optional<at::ScalarType> logical_element_type) {
   data()->logical_element_type = logical_element_type;
-}
-
-void XLATensor::SetTensor(at::Tensor tensor) {
-  SetTensorData(tensor);
-  data()->view = nullptr;
-  data()->xla_data = nullptr;
-  AssignIrValue(ir::Value());
-}
-
-void XLATensor::UpdateFromTensor(at::Tensor tensor, bool sync) {
-  if (sync) {
-    at::Tensor typed_tensor = tensor.dup();
-    SetIrValue(GetIrValueForTensor(typed_tensor, GetDevice()));
-  } else {
-    at::Tensor coyped_tensor = tensor.dup();
-    SetTensorData(coyped_tensor);
-    data()->xla_data = nullptr;
-    AssignIrValue(ir::Value());
-    if (data()->view != nullptr) {
-      ir::Value ir_value = GetIrValueForTensor(coyped_tensor, GetDevice());
-      data()->view = UpdateView(data()->view, std::move(ir_value));
-    }
-  }
-}
-
-void XLATensor::UpdateFromTensorOut(at::Tensor tensor) {
-  uint64_t numel = xla::util::Multiply<uint64_t>(tensor.shape());
-  if (data()->view != nullptr && xla::ShapeUtil::ElementsIn(shape()) != numel) {
-    data()->view = nullptr;
-  }
-  UpdateFromTensor(std::move(tensor), /*sync=*/false);
-}
-
-void XLATensor::UpdateFromTensorOut(const XLATensor& tensor) {
-  if (data()->view != nullptr &&
-      xla::ShapeUtil::ElementsIn(shape()) !=
-          xla::ShapeUtil::ElementsIn(tensor.shape())) {
-    data()->view = nullptr;
-  }
-  SetIrValue(tensor.GetIrValue());
 }
 
 std::vector<XLATensor> XLATensor::GetLiveTensors(const Device* device) {

@@ -26,7 +26,6 @@
 #include "tensorflow/compiler/tf2xla/xla_tensor/ir.h"
 #include "tensorflow/compiler/tf2xla/xla_tensor/ir_util.h"
 #include "tensorflow/compiler/tf2xla/xla_tensor/lowering_context.h"
-#include "tensorflow/compiler/tf2xla/xla_tensor/view.h"
 #include "tensorflow/compiler/xla/client/lib/pooling.h"
 #include "tensorflow/compiler/xla/client/xla_builder.h"
 #include "tensorflow/compiler/xla/status.h"
@@ -1360,12 +1359,6 @@ class XLATensor {
           logical_element_type(logical_element_type),
           device(device),
           unique_id(GetNextTensorId()) {}
-    Data(std::shared_ptr<View> view, const Device& device,
-         c10::optional<at::ScalarType> logical_element_type)
-        : view(std::move(view)),
-          logical_element_type(logical_element_type),
-          device(device),
-          unique_id(GetNextTensorId()) {}
     Data(at::Tensor tensor_data, const Device& device)
         : logical_element_type(tensor_data.scalar_type()),
           tensor_data(std::move(tensor_data)),
@@ -1376,7 +1369,6 @@ class XLATensor {
 
     xla::ComputationClient::DataPtr xla_data;
     ir::Value ir_value;
-    std::shared_ptr<View> view;
     c10::optional<at::ScalarType> logical_element_type;
     c10::optional<at::Tensor> tensor_data;
     const Device device;
@@ -1389,13 +1381,7 @@ class XLATensor {
             c10::optional<at::ScalarType> logical_element_type = absl::nullopt);
   XLATensor(ir::Value ir_value, const Device& device,
             c10::optional<at::ScalarType> logical_element_type = absl::nullopt);
-  XLATensor(std::shared_ptr<View> view, const Device& device,
-            c10::optional<at::ScalarType> logical_element_type = absl::nullopt);
   XLATensor(std::shared_ptr<Data> data);
-
-  static XLATensor Create(
-      std::shared_ptr<View> view, const Device& device,
-      c10::optional<at::ScalarType> logical_element_type = absl::nullopt);
 
   Data* data() const;
 
@@ -1412,15 +1398,6 @@ class XLATensor {
 
   ir::Value CreateTensorNode(xla::ComputationClient::DataPtr data,
                              bool read_only) const;
-
-  View::IrNode GetViewUpdate(const std::shared_ptr<View>& view) const;
-
-  std::shared_ptr<View> UpdateView(std::shared_ptr<View> view,
-                                   ir::Value ir_value) const;
-
-  void SetSubView(ViewInfo view_info) const;
-  std::shared_ptr<View> CreateView(ViewInfo view_info) const;
-  XLATensor CreateViewTensor(ViewInfo view_info) const;
 
   XLATensor CopyTensorToDevice(const Device& device);
 

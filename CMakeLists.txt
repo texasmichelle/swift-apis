@@ -90,9 +90,9 @@ if(ENABLE_PYTHON_SUPPORT)
 
   ExternalProject_Add(python-kit
     GIT_REPOSITORY
-      git://github.com/pvieito/PythonKit
+      git://github.com/texasmichelle/PythonKit
     GIT_TAG
-      master
+      tensorflow
     CMAKE_ARGS
       -D BUILD_SHARED_LIBS=YES
       -D CMAKE_MAKE_PROGRAM=${CMAKE_MAKE_PROGRAM}

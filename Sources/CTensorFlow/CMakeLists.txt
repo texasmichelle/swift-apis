@@ -21,4 +21,5 @@ install(DIRECTORY ${X10_SOURCE_DIR}/tensorflow/c
     PATTERN tf_datatype.h
     PATTERN tf_status.h
     PATTERN tf_tensor.h
-    PATTERN eager/c_api.h)
+    PATTERN eager/c_api.h
+    PATTERN eager/c_api_experimental.h)

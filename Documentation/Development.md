@@ -272,6 +272,7 @@ copy tensorflow\tensorflow\c\tf_tensor.h %DESTDIR%\usr\include\tensorflow\c\
 
 md %DESTDIR%\usr\include\tensorflow\c\eager
 cp tensorflow\tensorflow\c\eager\c_api.h %DESTDIR%\usr\include\tensorflow\c\eager\
+cp tensorflow\tensorflow\c\eager\c_api_experimental.h %DESTDIR%\usr\include\tensorflow\c\eager\
 
 md %DESTDIR%\usr\include\x10
 copy swift-apis\Sources\x10\swift_bindings\device_wrapper.h %DESTDIR%\usr\include\x10\
@@ -339,6 +340,7 @@ cp tensorflow/tensorflow/c/tf_tensor.h ${DESTDIR}/usr/include/tensorflow/c/
 
 mkdir -p ${DESTDIR}/usr/include/tensorflow/c/eager
 cp tensorflow/tensorflow/c/eager/c_api.h ${DESTDIR}/usr/include/tensorflow/c/eager/
+cp tensorflow/tensorflow/c/eager/c_api_experimental.h ${DESTDIR}/usr/include/tensorflow/c/eager/
 
 mkdir -p ${DESTDIR}/usr/include/x10
 cp swift-apis/Sources/x10/swift_bindings/device_wrapper.h ${DESTDIR}/usr/include/x10/

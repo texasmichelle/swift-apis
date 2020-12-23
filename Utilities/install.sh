@@ -23,6 +23,7 @@ function fix_tf_header() {
   sed -i -e 's#include "'"$3"'tensorflow/c/tf_status.h"#include "tf_status.h"#g' "$2"
   sed -i -e 's#include "'"$3"'tensorflow/c/c_api_experimental.h"#include "c_api_experimental.h"#g' "$2"
   sed -i -e 's#include "'"$3"'tensorflow/c/eager/c_api.h"#include "c_api_eager.h"#g' "$2"
+  sed -i -e 's#include "'"$3"'tensorflow/c/eager/c_api_experimental.h"#include "c_api_eager_experimental.h"#g' "$2"
 }
 
 function install_header() {
@@ -40,6 +41,7 @@ install_header "$TENSORFLOW_DIRECTORY/tensorflow/c/c_api_experimental.h" c_api_e
 install_header "$TENSORFLOW_DIRECTORY/tensorflow/c/tf_attrtype.h" tf_attrtype.h
 install_header "$TENSORFLOW_DIRECTORY/tensorflow/c/tf_status.h" tf_status.h
 install_header "$TENSORFLOW_DIRECTORY/tensorflow/c/eager/c_api.h" c_api_eager.h
+install_header "$TENSORFLOW_DIRECTORY/tensorflow/c/eager/c_api_experimental.h" c_api_eager_experimental.h
 cp tools/module.modulemap "$USR_DIRECTORY/lib/swift/linux/x86_64/modulemaps/CTensorFlow/"
 
 $USR_DIRECTORY/bin/swift build -Xswiftc -module-link-name -Xswiftc TensorFlow

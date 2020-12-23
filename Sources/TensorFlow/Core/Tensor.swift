@@ -790,7 +790,30 @@ extension Tensor: Differentiable & EuclideanDifferentiable where Scalar: TensorF
         case .XLA:
           return xlaTensor.device
         case .TF_EAGER:
-          return Device.defaultTFEager
+          var kind: Device.Kind = .CPU
+          let status = _ExecutionContext.global.status
+
+          if let cString = TFE_TensorHandleDeviceType(handle._cTensorHandle, status) {
+            checkOk(status)
+            let tfDeviceType = String(cString: cString)
+
+            switch tfDeviceType.uppercased() {
+                case "CPU":
+                  kind = .CPU
+                case "GPU":
+                  kind = .GPU
+                case "TPU":
+                  kind = .TPU
+                default:
+                  kind = .CPU
+            }
+          }
+
+          let tfDeviceID = TFE_TensorHandleDeviceID(_cTensorHandle, status)
+          checkOk(status)
+          let ordinal = Int(tfDeviceID) ?? 0
+
+          return Device(kind: kind, ordinal: ordinal, backend: .TF_EAGER)
         }
       }
     }
